@@ -1,0 +1,392 @@
+version: '3.9'
+
+volumes:
+
+  # bind volume with logs
+  logvolume:
+   driver: local
+   driver_opts:
+    type: none
+    o: bind
+    device: $PWD/logs
+
+  # bind-mount with configs
+  confvolume:
+   driver: local
+   driver_opts:
+    type: none
+    o: bind
+    device: $PWD/config
+
+  # volume for rhodecode caches, archive caches, elasticsearch etc
+  datavolume: {}
+
+  # postgres store
+  pg_data: {}
+
+  # volume for rhodecode elasticsearch
+  es_data: {}
+
+  # RhodeCode repo-store, it's where the repositories will be stored
+  rhodecode_repos: {}
+
+networks:
+  rhodecode_network:
+   name: rhodecode_network
+
+services:
+
+  rhodecode:
+    networks:
+      - rhodecode_network
+    image: rhodecode/app:${RC_VERSION:?specify-RC_VERSION-env-var}
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    command: [
+      "/var/opt/rhodecode_bin/bin/gunicorn",
+      "--name",
+      "gunicorn-rhodecode-1",
+      "--error-logfile=-",
+      "--paster=/etc/rhodecode/conf/compose/rhodecode.optimized.ini",
+      "--config=/etc/rhodecode/conf/gunicorn_conf.py"
+    ]
+    ports:
+      - "127.0.0.1::10020"
+
+    build:
+      context: .
+      dockerfile: service/rhodecode/rhodecode.dockerfile
+      network: rhodecode_network
+      args:
+        TZ: ${TZ}
+        RHODECODE_VERSION: ${RC_VERSION:?specify-RC_VERSION-env-var}
+        RHODECODE_DB: postgresql://rhodecode:${POSTGRES_PASSWORD:?must-specify-db-password}@database/${POSTGRES_DB:?must-specify-db-name}
+        RHODECODE_USER_NAME: ${RHODECODE_USER_NAME}
+        RHODECODE_USER_PASS: ${RHODECODE_USER_PASS}
+        RHODECODE_USER_EMAIL: ${RHODECODE_USER_EMAIL}
+
+    environment:
+      RC_APP_TYPE: rhodecode_http
+      RC_APP_PROC: 1
+      ENV_RC_BASE_URL: ${RHODECODE_BASE_URL}
+      SSL_CERT_FILE: "/etc/rhodecode/conf/ca-bundle.crt"
+      REQUESTS_CA_BUNDLE: "/etc/rhodecode/conf/ca-bundle.crt"
+      GIT_SSL_CAINFO: "/etc/rhodecode/conf/ca-bundle.crt"
+      GEVENT_RESOLVER: "ares"
+
+      DB_UPGRADE: 1  # run the DB upgrade
+      SETUP_APP: 1 # run the application default settings setup, can be turned off after initial run
+      MAIN_INI_PATH: /etc/rhodecode/conf/compose/rhodecode.optimized.ini
+
+      # SVN Specific
+      MOD_DAV_SVN_PORT: 8090
+      APACHE_LOG_DIR: /var/log/rhodecode/svn
+      MOD_DAV_SVN_CONF_FILE: /etc/rhodecode/conf/svn/mod_dav_svn.conf
+
+
+    healthcheck:
+      test: [ "CMD", "curl", "-A", "RhodeCode-Healthcheck", "-s", "-o", "/dev/null", "-w", "'%{http_code}'", "http://127.0.0.1:10020/_admin/ops/ping" ]
+      timeout: 30s
+      interval: 60s
+      retries: 10
+
+    depends_on:
+      - database
+      - redis
+
+    volumes:
+      - confvolume:/etc/rhodecode/conf
+      - logvolume:/var/log/rhodecode
+      - rhodecode_repos:/var/opt/rhodecode_repo_store
+      - datavolume:/var/opt/rhodecode_data
+
+    tmpfs:
+      - /data_ramdisk:size=1G
+
+  vcsserver:
+    networks:
+      - rhodecode_network
+    image: rhodecode/app:${RC_VERSION:?specify-RC_VERSION-env-var}
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    command: [
+       "/home/rhodecode/.rccontrol/vcsserver-1/profile/bin/gunicorn",
+       "--name=gunicorn-vcsserver-1",
+       "--error-logfile=-",
+       "--paster=/etc/rhodecode/conf/compose/vcsserver.optimized.ini",
+       "--config=/etc/rhodecode/conf/gunicorn_conf.py"
+    ]
+    ports:
+      - "127.0.0.1::10010"
+
+    healthcheck:
+      test: [ "CMD", "curl", "-A", "RhodeCode-Healthcheck", "-s", "-o", "/dev/null", "-w", "'%{http_code}'", "http://127.0.0.1:10010/status" ]
+      timeout: 30s
+      interval: 60s
+      retries: 10
+
+    environment:
+      RC_APP_TYPE: rhodecode_vcsserver
+      RC_APP_PROC: 1
+      MAIN_INI_PATH: /etc/rhodecode/conf/compose/vcsserver.optimized.ini
+      ENV_RC_BASE_URL: ${RHODECODE_BASE_URL}
+      SSL_CERT_FILE: "/etc/rhodecode/conf/ca-bundle.crt"
+      REQUESTS_CA_BUNDLE: "/etc/rhodecode/conf/ca-bundle.crt"
+      GIT_SSL_CAINFO: "/etc/rhodecode/conf/ca-bundle.crt"
+
+    depends_on:
+      - redis
+
+    volumes:
+      - confvolume:/etc/rhodecode/conf
+      - logvolume:/var/log/rhodecode
+      - rhodecode_repos:/var/opt/rhodecode_repo_store
+      - datavolume:/var/opt/rhodecode_data
+
+  celery:
+    networks:
+      - rhodecode_network
+    image: rhodecode/app:${RC_VERSION:?specify-RC_VERSION-env-var}
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    command: [
+        "/var/opt/rhodecode_bin/bin/celery",
+        "worker",
+        "--task-events",
+        "--autoscale=10,2",
+        "--no-color",
+        "--app=rhodecode.lib.celerylib.loader",
+        "--loglevel=DEBUG",
+        "--ini=/etc/rhodecode/conf/compose/rhodecode.optimized.ini"
+    ]
+
+    environment:
+      RC_APP_TYPE: rhodecode_celery
+      RC_APP_PROC: 1
+      MAIN_INI_PATH: /etc/rhodecode/conf/compose/rhodecode.optimized.ini
+      ENV_RC_BASE_URL: ${RHODECODE_BASE_URL}
+      SSL_CERT_FILE: "/etc/rhodecode/conf/ca-bundle.crt"
+      REQUESTS_CA_BUNDLE: "/etc/rhodecode/conf/ca-bundle.crt"
+      GIT_SSL_CAINFO: "/etc/rhodecode/conf/ca-bundle.crt"
+
+    depends_on:
+      - database
+      - redis
+
+    volumes:
+      - confvolume:/etc/rhodecode/conf
+      - logvolume:/var/log/rhodecode
+      - rhodecode_repos:/var/opt/rhodecode_repo_store
+      - datavolume:/var/opt/rhodecode_data
+
+  beat:
+    # This service is not scalable
+    networks:
+      - rhodecode_network
+    image: rhodecode/app:${RC_VERSION:?specify-RC_VERSION-env-var}
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    command: [
+      "/var/opt/rhodecode_bin/bin/celery",
+      "beat",
+      "--no-color",
+      "--app=rhodecode.lib.celerylib.loader",
+      "--scheduler=rhodecode.lib.celerylib.scheduler.RcScheduler",
+      "--loglevel=DEBUG",
+      "--ini=/etc/rhodecode/conf/compose/rhodecode.optimized.ini"
+    ]
+
+    environment:
+      RC_APP_TYPE: rhodecode_beat
+      RC_APP_PROC: 1
+      MAIN_INI_PATH: /etc/rhodecode/conf/compose/rhodecode.optimized.ini
+      ENV_RC_BASE_URL: ${RHODECODE_BASE_URL}
+      SSL_CERT_FILE: "/etc/rhodecode/conf/ca-bundle.crt"
+      REQUESTS_CA_BUNDLE: "/etc/rhodecode/conf/ca-bundle.crt"
+      GIT_SSL_CAINFO: "/etc/rhodecode/conf/ca-bundle.crt"
+
+    depends_on:
+      - database
+      - redis
+
+    volumes:
+      - confvolume:/etc/rhodecode/conf
+      - logvolume:/var/log/rhodecode
+      - rhodecode_repos:/var/opt/rhodecode_repo_store
+      - datavolume:/var/opt/rhodecode_data
+
+  svn:
+    networks:
+      - rhodecode_network
+    image: rhodecode/app:${RC_VERSION:?specify-RC_VERSION-env-var}
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    command: ["apachectl", "-D", "FOREGROUND"]
+
+    environment:
+      RC_APP_TYPE: rhodecode_svn
+
+      # SVN Specific
+      MOD_DAV_SVN_PORT: 8090
+      APACHE_LOG_DIR: /var/log/rhodecode/svn
+      MOD_DAV_SVN_CONF_FILE: /etc/rhodecode/conf/svn/mod_dav_svn.conf
+
+    ports:
+      - "127.0.0.1::8090"
+
+    healthcheck:
+      test: [ "CMD", "curl", "-A", "RhodeCode-Healthcheck", "-s", "-o", "/dev/null", "-w", "'%{http_code}'", "http://127.0.0.1:8090/_server_status" ]
+      timeout: 30s
+      interval: 60s
+      retries: 10
+
+    volumes:
+      - confvolume:/etc/rhodecode/conf
+      - logvolume:/var/log/rhodecode
+      - rhodecode_repos:/var/opt/rhodecode_repo_store
+
+  sshd:
+    networks:
+      - rhodecode_network
+    image: rhodecode/app:${RC_VERSION:?specify-RC_VERSION-env-var}
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    command: ["/usr/sbin/sshd", "-f", "/etc/rhodecode/sshd_config", "-D", "-e"]
+
+    environment:
+      RC_APP_TYPE: rhodecode_sshd
+      SSH_BOOTSTRAP: 1
+
+    ports:
+      # set from .env file
+      - "${RC_SSH_PORT:?must-specify-ssh-port}:22"
+
+    depends_on: {}
+
+    volumes:
+      - confvolume:/etc/rhodecode/conf
+      - logvolume:/var/log/rhodecode
+      - rhodecode_repos:/var/opt/rhodecode_repo_store
+      - datavolume:/var/opt/rhodecode_data
+
+  elasticsearch:
+    networks:
+      - rhodecode_network
+    image: docker.elastic.co/elasticsearch/elasticsearch:6.8.13
+
+    environment:
+      - cluster.name=elasticsearch-cluster
+      - network.host=0.0.0.0
+      - bootstrap.memory_lock=true
+      - discovery.type=single-node
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+
+  channelstream:
+    networks:
+      - rhodecode_network
+    image: channelstream/channelstream:0.7.1
+    restart: unless-stopped
+
+    ports:
+      - "127.0.0.1:9800:9800"
+
+    command: ["channelstream", "-i", "/etc/rhodecode/conf/compose/channelstream.ini"]
+
+    environment:
+      CHANNELSTREAM_ALLOW_POSTING_FROM: 0.0.0.0
+
+    healthcheck:
+        test: [ "CMD", "curl", "-s", "-o", "/dev/null", "-w", "'%{http_code}'", "http://127.0.0.1:9800/admin/sign_in" ]
+        timeout: 30s
+        interval: 60s
+        retries: 10
+
+    volumes:
+      - confvolume:/etc/rhodecode/conf
+      - logvolume:/var/log/rhodecode
+
+  redis:
+    networks:
+      - rhodecode_network
+    image: rhodecode/redis:6.0.10
+    build:
+      context: .
+      dockerfile: service/redis/rhodecode_redis.dockerfile
+      network: rhodecode_network
+
+    restart: unless-stopped
+
+    ports:
+      - "127.0.0.1::6379"
+
+    volumes:
+      - logvolume:/var/log/rhodecode
+
+  database:
+    networks:
+      - rhodecode_network
+    image: rhodecode/database:13.1
+    build:
+      context: .
+      dockerfile: service/database/rhodecode_database.dockerfile
+      network: rhodecode_network
+    restart: unless-stopped
+
+    ports:
+      - "127.0.0.1::5432"
+
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?must-specify-db-name}
+      POSTGRES_USER: rhodecode
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?must-specify-db-password}
+
+    volumes:
+      # save the pg_data volume
+      - pg_data:/var/lib/postgresql/data
+      - logvolume:/var/log/rhodecode
+
+  nginx:
+    networks:
+      - rhodecode_network
+    image: rhodecode/nginx:1.19.6
+    build:
+      context: .
+      dockerfile: service/nginx/rhodecode_nginx.dockerfile
+      network: rhodecode_network
+    restart: unless-stopped
+
+    ports:
+      # set from .env file
+      - "${RC_HTTP_PORT:?must-specify-http-port}:80"
+      - "${RC_HTTPS_PORT:?must-specify-https-port}:443"
+
+    healthcheck:
+      # change port 80 to 443 when only using SSL
+      test: [ "CMD", "curl", "-A", "RhodeCode-Healthcheck", "-s", "-o", "/dev/null", "-w", "'%{http_code}'", "http://127.0.0.1:80/_admin/ops/ping" ]
+      timeout: 30s
+      interval: 60s
+      retries: 10
+
+    depends_on:
+      - channelstream
+
+    volumes:
+      - confvolume:/etc/rhodecode/conf
+      - logvolume:/var/log/rhodecode
+
+    volumes_from:
+      - rhodecode:ro

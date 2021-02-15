@@ -1,0 +1,22 @@
+Port 22
+ChallengeResponseAuthentication no
+
+HostKey /etc/rhodecode/conf/ssh/ssh_host_rsa_key
+HostKey /etc/rhodecode/conf/ssh/ssh_host_ecdsa_key
+HostKey /etc/rhodecode/conf/ssh/ssh_host_ed25519_key
+
+Protocol 2
+PermitRootLogin no
+PasswordAuthentication no
+MaxStartups 100:30:200
+AllowUsers rhodecode
+PrintMotd no
+PubkeyAuthentication yes
+AuthorizedKeysFile /etc/rhodecode/conf/ssh/authorized_keys /etc/rhodecode/conf/ssh/authorized_keys_rhodecode
+
+# Fixes: User USERNAME not allowed because account is locked
+# With "UsePAM yes" even if account gets locked because of password the key still works
+UsePAM yes
+
+# Disabling use DNS in ssh since it tends to slow connecting
+UseDNS no

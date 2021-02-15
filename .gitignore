@@ -1,0 +1,12 @@
+# CACHE FILES
+.cache/RhodeCode-installer*
+.cache/*.tar.bz2
+.cache/locale-archive
+
+# LOGS
+logs/*.log
+logs/nginx/*.log
+logs/svn/*.log
+
+.idea
+config/compose/.rcmetadata.json
