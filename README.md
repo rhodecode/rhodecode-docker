@@ -26,7 +26,11 @@ Visit docker site and install docker (min version 20.10) and docker compose:
 
 
 # Installation steps
+
 Follow these steps to build and run the RhodeCode Cluster via Docker-compose.
+Get the repository:
+
+git clone https://code.rhodecode.com/rhodecode-enterprise-docker && cd rhodecode-enterprise-docker
 
 ## Download installer binaries
 
