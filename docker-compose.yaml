@@ -21,14 +21,21 @@ volumes:
   # volume for rhodecode caches, archive caches, elasticsearch etc
   datavolume: {}
 
-  # postgres store
-  pg_data: {}
+  # volume for RhodeCode repo-store, it's where the repositories will be stored
+  rhodecode_repos:
+    labels:
+      "keep": 1
+
+  # volume for postgres db store
+  pg_data:
+    labels:
+      "keep": 1
 
   # volume for rhodecode elasticsearch
-  es_data: {}
+  es_data:
+    labels:
+      "keep": 1
 
-  # RhodeCode repo-store, it's where the repositories will be stored
-  rhodecode_repos: {}
 
 networks:
   rhodecode_network:
@@ -45,8 +52,7 @@ services:
     restart: unless-stopped
     command: [
       "/var/opt/rhodecode_bin/bin/gunicorn",
-      "--name",
-      "gunicorn-rhodecode-1",
+      "--name=gunicorn-rhodecode-1",
       "--error-logfile=-",
       "--paster=/etc/rhodecode/conf/compose/rhodecode.optimized.ini",
       "--config=/etc/rhodecode/conf/gunicorn_conf.py"
@@ -57,7 +63,7 @@ services:
     build:
       context: .
       dockerfile: service/rhodecode/rhodecode.dockerfile
-      network: rhodecode_network
+      #network: rhodecode_network
       args:
         TZ: ${TZ}
         RHODECODE_VERSION: ${RC_VERSION:?specify-RC_VERSION-env-var}
@@ -83,7 +89,6 @@ services:
       MOD_DAV_SVN_PORT: 8090
       APACHE_LOG_DIR: /var/log/rhodecode/svn
       MOD_DAV_SVN_CONF_FILE: /etc/rhodecode/conf/svn/mod_dav_svn.conf
-
 
     healthcheck:
       test: [ "CMD", "curl", "-A", "RhodeCode-Healthcheck", "-s", "-o", "/dev/null", "-w", "'%{http_code}'", "http://127.0.0.1:10020/_admin/ops/ping" ]
@@ -278,7 +283,7 @@ services:
   elasticsearch:
     networks:
       - rhodecode_network
-    image: docker.elastic.co/elasticsearch/elasticsearch:6.8.13
+    image: docker.elastic.co/elasticsearch/elasticsearch:6.8.14
 
     environment:
       - cluster.name=elasticsearch-cluster
@@ -322,11 +327,14 @@ services:
   redis:
     networks:
       - rhodecode_network
-    image: rhodecode/redis:6.0.10
+    image: rhodecode/redis:6.2.1
+
     build:
       context: .
       dockerfile: service/redis/rhodecode_redis.dockerfile
       network: rhodecode_network
+      args:
+        REDIS_BUILD: 6.2.1
 
     restart: unless-stopped
 
@@ -339,20 +347,24 @@ services:
   database:
     networks:
       - rhodecode_network
-    image: rhodecode/database:13.1
+    image: rhodecode/database:13.2
+
     build:
       context: .
       dockerfile: service/database/rhodecode_database.dockerfile
       network: rhodecode_network
+      args:
+        POSTGRES_BUILD: 13.2
+
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?must-specify-db-name}
+      POSTGRES_USER: ${POSTGRES_USER:?must-specify-db-user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?must-specify-db-password}
+
     restart: unless-stopped
 
     ports:
       - "127.0.0.1::5432"
-
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:?must-specify-db-name}
-      POSTGRES_USER: rhodecode
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?must-specify-db-password}
 
     volumes:
       # save the pg_data volume
@@ -362,11 +374,15 @@ services:
   nginx:
     networks:
       - rhodecode_network
-    image: rhodecode/nginx:1.19.6
+    image: rhodecode/nginx:1.19.8
+
     build:
       context: .
       dockerfile: service/nginx/rhodecode_nginx.dockerfile
       network: rhodecode_network
+      args:
+        NGINX_BUILD: 1.19.8
+
     restart: unless-stopped
 
     ports:

@@ -4,7 +4,9 @@ MAINTAINER RhodeCode Inc. <support@rhodecode.com>
 ARG TZ="UTC"
 ARG LOCALE_TYPE=en_US.UTF-8
 ARG RHODECODE_TYPE=Enterprise
+# binary-install
 ARG RHODECODE_VERSION=4.24.1
+
 ARG RHODECODE_DB=sqlite
 ARG RHODECODE_USER_NAME=admin
 ARG RHODECODE_USER_PASS=secret4
@@ -76,6 +78,8 @@ set -eux; \
         curl \
         sudo \
         gosu \
+        bzip2 \
+        ca-certificates \
         $PYTHON_DEPS \
         $SSH_LOCALE_DEPS \
         $SVN_LOCALE_DEPS \
@@ -105,7 +109,8 @@ ENV \
 RUN \
 echo "** Create system user $RC_USER **" && \
   groupadd --system --gid 999 $RC_USER && \
-  useradd --system --gid $RC_USER --uid 999 --shell /bin/bash $RC_USER
+  useradd --system --gid $RC_USER --uid 999 --shell /bin/bash $RC_USER && \
+  usermod -G $RC_USER $RC_USER
 
 # set the defult bash shell
 SHELL ["/bin/bash", "-c"]
@@ -119,6 +124,7 @@ echo $TZ > /etc/timezone
 
 RUN \
 echo "** prepare rhodecode store and cache **" && \
+  install -d -m 0700 -o $RC_USER -g $RC_USER /nix && \
   install -d -m 0755 -o $RC_USER -g $RC_USER /opt/rhodecode && \
   install -d -m 0755 -o $RC_USER -g $RC_USER /var/opt/rhodecode_bin && \
   install -d -m 0755 -o $RC_USER -g $RC_USER $RHODECODE_REPO_DIR && \
@@ -163,8 +169,8 @@ echo "**** Apache config ****" && \
 
 # Copy artifacts
 COPY --chown=$RC_USER:$RC_USER .cache/* /home/$RC_USER/.rccontrol/cache/
-COPY --chown=$RC_USER:$RC_USER service/rhodecode/bootstrap/* /home/$RC_USER/.rccontrol/bootstrap/
 COPY --chown=$RC_USER:$RC_USER config/compose/rhodecode_enterprise.license /home/$RC_USER/.rccontrol/bootstrap/
+COPY --chown=$RC_USER:$RC_USER service/rhodecode/bootstrap/* /home/$RC_USER/.rccontrol/bootstrap/
 
 RUN \
 echo "**** locale-archive path ****" && \
@@ -181,33 +187,36 @@ echo "** install rhodecode control **" && \
   chmod +x ${INSTALLER} && \
   ${INSTALLER} --accept-license && \
   ${RCCONTROL} self-init && \
-  cp -v /home/$RC_USER/.rccontrol-profile/etc/ca-bundle.crt $BUILD_CONF/
+  cp -v /home/$RC_USER/.rccontrol-profile/etc/ca-bundle.crt $BUILD_CONF/ && \
+  echo "Done"
 
 RUN \
 echo "** install vcsserver ${RHODECODE_VERSION} **" && \
   ${RCCONTROL} install VCSServer --version ${RHODECODE_VERSION} --start-at-boot=yes --accept-license --offline \
   '{"host":"'"$RHODECODE_VCS_HOST"'", "port":"'"$RHODECODE_VCS_PORT"'"}' && \
   VCSSERVER_PATH=/home/$RC_USER/.rccontrol/vcsserver-1 && \
-  cp -v ${VCSSERVER_PATH}/vcsserver.ini $BUILD_CONF/
+  rm -rf $BUILD_BIN_DIR/vcs_bin && ln -s ${VCSSERVER_PATH}/profile/bin $BUILD_BIN_DIR/vcs_bin && \
+  cp -v ${VCSSERVER_PATH}/vcsserver.ini $BUILD_CONF/vcsserver.ini
 
 RUN \
 echo "** install rhodecode ${RHODECODE_TYPE} ${RHODECODE_VERSION} **" && \
-    RHODECODE_DB_INIT=sqlite && \
-    ${RCCONTROL} install ${RHODECODE_TYPE} --version ${RHODECODE_VERSION} --start-at-boot=yes --accept-license --offline \
-    '{"host":"'"$RHODECODE_HOST"'", "port":"'"$RHODECODE_HTTP_PORT"'", "username":"'"$RHODECODE_USER_NAME"'", "password":"'"$RHODECODE_USER_PASS"'", "email":"'"$RHODECODE_USER_EMAIL"'", "repo_dir":"'"$RHODECODE_REPO_DIR"'", "database": "'"$RHODECODE_DB_INIT"'", "skip_existing_db": "1"}' && \
-    RHODECODE_PATH=/home/$RC_USER/.rccontrol/${RC_TYPE_ID} && \
-    cp -v ${RHODECODE_PATH}/rhodecode.ini $BUILD_CONF/ && \
-    cp -v ${RHODECODE_PATH}/search_mapping.ini $BUILD_CONF/ && \
-    cp -v ${RHODECODE_PATH}/gunicorn_conf.py $BUILD_CONF/ && \
-    rm -rf $BUILD_BIN_DIR/bin && ln -s ${RHODECODE_PATH}/profile/bin $BUILD_BIN_DIR && \
-    mkdir -p $RHODECODE_DATA_DIR/static && cp -r ${RHODECODE_PATH}/public/* $RHODECODE_DATA_DIR/static/ && \
-    rm ${RHODECODE_PATH}/rhodecode.db
+  RHODECODE_DB_INIT=sqlite && \
+  ${RCCONTROL} install ${RHODECODE_TYPE} --version ${RHODECODE_VERSION} --start-at-boot=yes --accept-license --offline \
+  '{"host":"'"$RHODECODE_HOST"'", "port":"'"$RHODECODE_HTTP_PORT"'", "username":"'"$RHODECODE_USER_NAME"'", "password":"'"$RHODECODE_USER_PASS"'", "email":"'"$RHODECODE_USER_EMAIL"'", "repo_dir":"'"$RHODECODE_REPO_DIR"'", "database": "'"$RHODECODE_DB_INIT"'", "skip_existing_db": "1"}' && \
+  RHODECODE_PATH=/home/$RC_USER/.rccontrol/${RC_TYPE_ID} && \
+  rm -rf $BUILD_BIN_DIR/bin && ln -s ${RHODECODE_PATH}/profile/bin $BUILD_BIN_DIR/ && \
+  cp -v ${RHODECODE_PATH}/rhodecode.ini $BUILD_CONF/rhodecode.ini && \
+  cp -v ${RHODECODE_PATH}/gunicorn_conf.py $BUILD_CONF/gunicorn_conf.py && \
+  cp -v ${RHODECODE_PATH}/search_mapping.ini $BUILD_CONF/search_mapping.ini && \
+  mkdir -p $RHODECODE_DATA_DIR/static && cp -r ${RHODECODE_PATH}/public/* $RHODECODE_DATA_DIR/static/ && \
+  rm ${RHODECODE_PATH}/rhodecode.db
 
 
 RUN \
 echo "** configure supervisord **" && \
-    cp -v ${SUPERVISOR_CONF} $BUILD_CONF/ && \
-    sed -i "s/self_managed_supervisor = False/self_managed_supervisor = True/g" /home/$RC_USER/.rccontrol.ini
+  cp -v ${SUPERVISOR_CONF} $BUILD_CONF/ && \
+  sed -i "s/self_managed_supervisor = False/self_managed_supervisor = True/g" /home/$RC_USER/.rccontrol.ini && \
+  echo "done"
 
 USER root
 
